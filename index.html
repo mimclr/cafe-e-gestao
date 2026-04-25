@@ -252,6 +252,15 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
   font-size:13px;font-weight:500;opacity:0;transition:all .28s;z-index:600;
   white-space:nowrap;pointer-events:none}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* PRINT STYLES */
+@media print{
+  body > .app, body > .toast { display:none !important; }
+  #pdf-overlay { display:block !important; position:static !important; overflow:visible !important; }
+  .no-print-btn { display:none !important; }
+  #pdf-content { display:block !important; }
+  @page { margin: 1cm; }
+}
 </style>
 </head>
 <body>
@@ -618,14 +627,37 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
 <div class="mbg" id="modal-exp" onclick="bgClose(event,'exp')">
   <div class="modal">
     <h3>Exportar Dados</h3>
-    <p>Escolha o formato. Serao exportadas todas as fazendas e o historico completo de estimativas.</p>
-    <div class="m-row">
-      <button class="btn-r" onclick="exportPDF()">PDF</button>
-      <button class="btn-g" onclick="exportXLSX()">Excel (.xlsx)</button>
+    <p>Filtre por fazenda e talhao, depois escolha o formato.</p>
+    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
+      <div class="fld">
+        <label>Filtrar por Fazenda</label>
+        <select id="exp-faz-filter" onchange="atualizarFiltroTalhao()">
+          <option value="">Todas as fazendas</option>
+        </select>
+      </div>
+      <div class="fld">
+        <label>Filtrar por Talhao</label>
+        <select id="exp-tal-filter">
+          <option value="">Todos os talhoes</option>
+        </select>
+      </div>
     </div>
-    <button class="btn-s" onclick="closeModal('exp')">Cancelar</button>
+    <div class="m-row">
+      <button class="btn-r" onclick="exportPDF()">PDF / Imprimir</button>
+      <button class="btn-g" onclick="exportXLSX()">CSV / Excel</button>
+    </div>
+    <button class="btn-s" onclick="closeModal('exp')" style="margin-top:8px">Cancelar</button>
     <div class="prog" id="prog"><div class="prog-f" id="prog-f"></div></div>
   </div>
+</div>
+
+<!-- OVERLAY PDF PARA IMPRESSAO MOBILE -->
+<div id="pdf-overlay" style="display:none;position:fixed;inset:0;z-index:1000;background:#fff;overflow-y:auto;padding:16px">
+  <div style="display:flex;gap:8px;margin-bottom:16px;position:sticky;top:0;background:#fff;padding:8px 0;border-bottom:2px solid #0A3D35;z-index:10" class="no-print-btn">
+    <button onclick="imprimirRelatorio()" style="flex:1;background:#0A3D35;color:#fff;border:none;padding:12px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">&#128438; Imprimir / Salvar PDF</button>
+    <button onclick="fecharOverlayPDF()" style="flex:1;background:#eee;color:#333;border:none;padding:12px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">&#10005; Fechar</button>
+  </div>
+  <div id="pdf-content"></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -1198,7 +1230,10 @@ function abrirLaborRural(){
     window.open('https://laborrural.com/', '_blank');
   }
 }
-function openModal(id){ document.getElementById('modal-'+id).classList.add('show'); }
+function openModal(id){
+  document.getElementById('modal-'+id).classList.add('show');
+  if(id === 'exp') popularFiltrosExportacao();
+}
 function closeModal(id){ document.getElementById('modal-'+id).classList.remove('show'); }
 function bgClose(e,id){ if(e.target===document.getElementById('modal-'+id)) closeModal(id); }
 
@@ -1226,13 +1261,74 @@ function stopProg(){
   }, 800);
 }
 
+// ─── FILTROS DE EXPORTACAO ────────────────────────────────────────
+function popularFiltrosExportacao(){
+  var selFaz = document.getElementById('exp-faz-filter');
+  var selTal = document.getElementById('exp-tal-filter');
+  selFaz.innerHTML = '<option value="">Todas as fazendas</option>';
+  selTal.innerHTML = '<option value="">Todos os talhoes</option>';
+  store.get('fazendas').forEach(function(f){
+    var o = document.createElement('option');
+    o.value = f.id; o.textContent = f.nome;
+    selFaz.appendChild(o);
+  });
+  store.get('talhoes').forEach(function(t){
+    var faz = store.get('fazendas').find(function(f){ return f.id===t.fid; });
+    var o = document.createElement('option');
+    o.value = t.id; o.textContent = (faz ? faz.nome+' - ' : '') + t.nome;
+    selTal.appendChild(o);
+  });
+}
+
+function atualizarFiltroTalhao(){
+  var fidSel = document.getElementById('exp-faz-filter').value;
+  var selTal = document.getElementById('exp-tal-filter');
+  selTal.innerHTML = '<option value="">Todos os talhoes</option>';
+  var tals = store.get('talhoes');
+  var faz  = store.get('fazendas');
+  tals.forEach(function(t){
+    if(fidSel && String(t.fid) !== String(fidSel)) return;
+    var f = faz.find(function(x){ return x.id===t.fid; });
+    var o = document.createElement('option');
+    o.value = t.id; o.textContent = (f ? f.nome+' - ' : '') + t.nome;
+    selTal.appendChild(o);
+  });
+}
+
+function getDadosFiltrados(){
+  var fidSel = document.getElementById('exp-faz-filter') ? document.getElementById('exp-faz-filter').value : '';
+  var tidSel = document.getElementById('exp-tal-filter') ? document.getElementById('exp-tal-filter').value : '';
+  var allFaz = store.get('fazendas');
+  var allEst = store.get('estimativas');
+  var allTal = store.get('talhoes');
+
+  var faz = allFaz;
+  var est = allEst;
+
+  if(fidSel){
+    faz = allFaz.filter(function(f){ return String(f.id)===String(fidSel); });
+    est = allEst.filter(function(e){ return String(e.fid)===String(fidSel); });
+  }
+  if(tidSel){
+    var talObj = allTal.find(function(t){ return String(t.id)===String(tidSel); });
+    if(talObj){
+      var talNome = talObj.nome;
+      var fazObj  = allFaz.find(function(f){ return f.id===talObj.fid; });
+      var prefix  = fazObj ? fazObj.nome + ' - ' + talObj.nome : talObj.nome;
+      est = est.filter(function(e){ return e.talhao === prefix || e.talhao.indexOf(talNome) !== -1; });
+    }
+  }
+  return { faz: faz, est: est };
+}
+
 // ─── EXPORT CSV ───────────────────────────────────────────────────
 function exportXLSX(){
   startProg();
   setTimeout(function(){
     try {
-      var faz = store.get('fazendas');
-      var est = store.get('estimativas');
+      var dados = getDadosFiltrados();
+      var faz = dados.faz;
+      var est = dados.est;
       var NL  = '\r\n';
       var BOM = '\uFEFF';
 
@@ -1277,10 +1373,14 @@ function exportXLSX(){
       }
 
       var data = new Date().toISOString().slice(0,10).replace(/-/g,'');
-      baixarCSV(csvEst, 'LaborRural_Estimativas_' + data + '.csv');
-      baixarCSV(csvFaz, 'LaborRural_Fazendas_' + data + '.csv');
+      if(est.length)  baixarCSV(csvEst, 'LaborRural_Estimativas_' + data + '.csv');
+      if(faz.length)  baixarCSV(csvFaz, 'LaborRural_Fazendas_' + data + '.csv');
 
-      showToast('Arquivos CSV baixados! Abra no Excel.');
+      if(!est.length && !faz.length){
+        showToast('Nenhum dado encontrado com esse filtro.');
+      } else {
+        showToast('CSV gerado! Abra no Excel.');
+      }
       stopProg();
     } catch(err){
       showToast('Erro: ' + err.message);
@@ -1289,14 +1389,30 @@ function exportXLSX(){
   }, 300);
 }
 
-// ─── EXPORT PDF (impressao nativa - funciona offline) ─────────────
+// ─── EXPORT PDF (overlay nativo - funciona offline e no mobile) ────
+function imprimirRelatorio(){
+  window.print();
+}
+
+function fecharOverlayPDF(){
+  document.getElementById('pdf-overlay').style.display = 'none';
+  document.getElementById('pdf-content').innerHTML = '';
+}
+
 function exportPDF(){
   startProg();
   setTimeout(function(){
     try {
-      var faz = store.get('fazendas');
-      var est = store.get('estimativas');
+      var dados = getDadosFiltrados();
+      var faz = dados.faz;
+      var est = dados.est;
       var dt  = new Date().toLocaleDateString('pt-BR');
+
+      if(!est.length && !faz.length){
+        showToast('Nenhum dado encontrado com esse filtro.');
+        stopProg();
+        return;
+      }
 
       var linhasEst = est.map(function(e){
         var ps = e.nplantas ? ' ('+e.nplantas+' pl.)' : '';
@@ -1328,78 +1444,68 @@ function exportPDF(){
       var totP = est.length ? est.reduce(function(a,e){ return a+e.sc*e.area; },0).toFixed(0) : '0';
       var medS = est.length ? (est.reduce(function(a,e){ return a+e.sc; },0)/est.length).toFixed(1) : '-';
 
-      var win = window.open('','_blank','width=900,height=700');
-      win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8">');
-      win.document.write('<title>Labor Rural - Estimativas</title>');
-      win.document.write('<style>');
-      win.document.write('*{box-sizing:border-box;margin:0;padding:0}');
-      win.document.write('body{font-family:Arial,sans-serif;font-size:11px;color:#1E2D28;padding:20px}');
-      win.document.write('.header{background:#0A3D35;color:#fff;padding:14px 18px;border-radius:6px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center}');
-      win.document.write('.header h1{font-size:16px;font-weight:700}');
-      win.document.write('.header p{font-size:10px;opacity:.75}');
-      win.document.write('.amber-bar{height:3px;background:#F5C254;border-radius:2px;margin-bottom:16px}');
-      win.document.write('.cards{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:16px}');
-      win.document.write('.card{background:#E4F4F2;border-radius:6px;padding:10px;text-align:center}');
-      win.document.write('.card .val{font-size:20px;font-weight:700;color:#0A3D35}');
-      win.document.write('.card .lbl{font-size:9px;color:#4A6660;margin-top:2px}');
-      win.document.write('h2{font-size:12px;font-weight:700;color:#0A3D35;text-transform:uppercase;letter-spacing:1px;padding:6px 0;border-bottom:2px solid #0A3D35;margin:14px 0 8px}');
-      win.document.write('table{width:100%;border-collapse:collapse;font-size:10px}');
-      win.document.write('thead tr{background:#0A3D35;color:#fff}');
-      win.document.write('thead th{padding:6px 5px;text-align:left;font-weight:600}');
-      win.document.write('tbody tr:nth-child(even){background:#F4F7F5}');
-      win.document.write('tbody td{padding:5px;border-bottom:1px solid #DDE8E4}');
-      win.document.write('.footer{margin-top:14px;padding-top:8px;border-top:1px solid #DDE8E4;font-size:9px;color:#8FA8A0;display:flex;justify-content:space-between}');
-      win.document.write('.formula-box{background:#FFF8E6;border:1px solid #F5C254;border-radius:6px;padding:10px;margin:12px 0;font-size:10px;color:#7a4a00}');
-      win.document.write('.formula-box strong{font-size:11px;display:block;margin-bottom:4px;color:#BA7517}');
-      win.document.write('@media print{body{padding:10px} .no-print{display:none} @page{margin:1cm}}');
-      win.document.write('</style></head><body>');
+      var html = '';
+      html += '<div style="background:#0A3D35;color:#fff;padding:14px 18px;border-radius:6px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">';
+      html += '<div><div style="font-size:16px;font-weight:700">&#9749; Labor Rural</div><div style="font-size:10px;opacity:.75">Estimativa de Produtividade &middot; Caf&eacute; Conilon</div></div>';
+      html += '<div style="text-align:right;font-size:10px;opacity:.75"><div>Gerado em:</div><div style="font-weight:700">'+dt+'</div></div>';
+      html += '</div>';
+      html += '<div style="height:3px;background:#F5C254;border-radius:2px;margin-bottom:14px"></div>';
 
-      win.document.write('<div class="header">');
-      win.document.write('<div><h1>&#9749; Labor Rural</h1><p>Estimativa de Produtividade &middot; Caf&eacute; Conilon</p></div>');
-      win.document.write('<div style="text-align:right"><p>Relat&oacute;rio gerado em:</p><p><strong>'+dt+'</strong></p></div>');
-      win.document.write('</div>');
-      win.document.write('<div class="amber-bar"></div>');
+      html += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px">';
+      html += '<div style="background:#E4F4F2;border-radius:6px;padding:10px;text-align:center"><div style="font-size:20px;font-weight:700;color:#0A3D35">'+faz.length+'</div><div style="font-size:9px;color:#4A6660;margin-top:2px">Fazendas</div></div>';
+      html += '<div style="background:#E4F4F2;border-radius:6px;padding:10px;text-align:center"><div style="font-size:20px;font-weight:700;color:#0A3D35">'+est.length+'</div><div style="font-size:9px;color:#4A6660;margin-top:2px">Estimativas</div></div>';
+      html += '<div style="background:#E4F4F2;border-radius:6px;padding:10px;text-align:center"><div style="font-size:20px;font-weight:700;color:#0A3D35">'+totA+'</div><div style="font-size:9px;color:#4A6660;margin-top:2px">ha avaliados</div></div>';
+      html += '<div style="background:#E4F4F2;border-radius:6px;padding:10px;text-align:center"><div style="font-size:20px;font-weight:700;color:#0A3D35">'+totP+'</div><div style="font-size:9px;color:#4A6660;margin-top:2px">sc estimadas</div></div>';
+      html += '<div style="background:#E4F4F2;border-radius:6px;padding:10px;text-align:center"><div style="font-size:20px;font-weight:700;color:#0A3D35">'+medS+'</div><div style="font-size:9px;color:#4A6660;margin-top:2px">sc/ha m&eacute;dia</div></div>';
+      html += '</div>';
 
-      win.document.write('<div class="cards">');
-      win.document.write('<div class="card"><div class="val">'+faz.length+'</div><div class="lbl">Fazendas</div></div>');
-      win.document.write('<div class="card"><div class="val">'+est.length+'</div><div class="lbl">Estimativas</div></div>');
-      win.document.write('<div class="card"><div class="val">'+totA+'</div><div class="lbl">ha avaliados</div></div>');
-      win.document.write('<div class="card"><div class="val">'+totP+'</div><div class="lbl">sc estimadas</div></div>');
-      win.document.write('<div class="card"><div class="val">'+medS+'</div><div class="lbl">sc/ha m&eacute;dia</div></div>');
-      win.document.write('</div>');
+      var tblStyle = 'width:100%;border-collapse:collapse;font-size:10px;margin-bottom:14px';
+      var thStyle  = 'padding:6px 5px;text-align:left;font-weight:600;background:#0A3D35;color:#fff';
+      var tdStyle  = 'padding:5px;border-bottom:1px solid #DDE8E4';
 
       if(est.length){
-        win.document.write('<h2>Hist&oacute;rico de Estimativas</h2>');
-        win.document.write('<table><thead><tr>');
-        win.document.write('<th>Fazenda / Talh&atilde;o</th><th>Data</th><th>H</th><th>RP</th><th>RO</th><th>F</th><th>NP</th><th>&Aacute;rea</th><th>sc/ha</th><th>Total</th>');
-        win.document.write('</tr></thead><tbody>'+linhasEst+'</tbody></table>');
+        html += '<div style="font-size:12px;font-weight:700;color:#0A3D35;text-transform:uppercase;letter-spacing:1px;padding:6px 0;border-bottom:2px solid #0A3D35;margin-bottom:8px">Hist&oacute;rico de Estimativas</div>';
+        html += '<table style="'+tblStyle+'"><thead><tr>';
+        html += '<th style="'+thStyle+'">Fazenda / Talh&atilde;o</th><th style="'+thStyle+'">Data</th><th style="'+thStyle+'">H</th><th style="'+thStyle+'">RP</th><th style="'+thStyle+'">RO</th><th style="'+thStyle+'">F</th><th style="'+thStyle+'">NP</th><th style="'+thStyle+'">&Aacute;rea</th><th style="'+thStyle+'">sc/ha</th><th style="'+thStyle+'">Total</th>';
+        html += '</tr></thead><tbody>';
+        est.forEach(function(e, idx){
+          var bg = idx%2===0 ? '' : 'background:#F4F7F5';
+          var ps = e.nplantas ? ' ('+e.nplantas+' pl.)' : '';
+          html += '<tr style="'+bg+'"><td style="'+tdStyle+'">'+e.talhao+'</td><td style="'+tdStyle+'">'+e.data+ps+'</td><td style="'+tdStyle+'">'+e.h+'</td><td style="'+tdStyle+'">'+e.rp+'</td><td style="'+tdStyle+'">'+e.ro+'</td><td style="'+tdStyle+'">'+e.f+'</td><td style="'+tdStyle+'">'+e.np+'</td><td style="'+tdStyle+'">'+e.area+' ha</td><td style="'+tdStyle+'"><strong>'+e.sc.toFixed(1)+'</strong></td><td style="'+tdStyle+'">'+(e.sc*e.area).toFixed(0)+' sc</td></tr>';
+        });
+        html += '</tbody></table>';
       }
 
       if(faz.length){
-        win.document.write('<h2>Fazendas Cadastradas</h2>');
-        win.document.write('<table><thead><tr>');
-        win.document.write('<th>Nome</th><th>Munic&iacute;pio/UF</th><th>&Aacute;rea</th><th>Variedade</th><th>Ano</th><th>Estimativas</th><th>M&eacute;dia sc/ha</th>');
-        win.document.write('</tr></thead><tbody>'+linhasFaz+'</tbody></table>');
+        html += '<div style="font-size:12px;font-weight:700;color:#0A3D35;text-transform:uppercase;letter-spacing:1px;padding:6px 0;border-bottom:2px solid #0A3D35;margin-bottom:8px">Fazendas Cadastradas</div>';
+        html += '<table style="'+tblStyle+'"><thead><tr>';
+        html += '<th style="'+thStyle+'">Nome</th><th style="'+thStyle+'">Munic&iacute;pio/UF</th><th style="'+thStyle+'">&Aacute;rea</th><th style="'+thStyle+'">Variedade</th><th style="'+thStyle+'">Ano</th><th style="'+thStyle+'">Estimativas</th><th style="'+thStyle+'">M&eacute;dia sc/ha</th>';
+        html += '</tr></thead><tbody>';
+        faz.forEach(function(f, idx){
+          var bg = idx%2===0 ? '' : 'background:#F4F7F5';
+          var ests = est.filter(function(e){ return e.fid===f.id; });
+          var med  = ests.length ? (ests.reduce(function(a,e){ return a+e.sc; },0)/ests.length).toFixed(1) : '-';
+          html += '<tr style="'+bg+'"><td style="'+tdStyle+'">'+f.nome+'</td><td style="'+tdStyle+'">'+f.mun+'</td><td style="'+tdStyle+'">'+f.area+' ha</td><td style="'+tdStyle+'">'+f.var+'</td><td style="'+tdStyle+'">'+f.ano+'</td><td style="'+tdStyle+'">'+ests.length+'</td><td style="'+tdStyle+'">'+med+'</td></tr>';
+        });
+        html += '</tbody></table>';
       }
 
-      win.document.write('<div class="formula-box">');
-      win.document.write('<strong>F&oacute;rmula Oficial: P = [H &times; RP &times; RO &times; F &times; 2 &times; 0,00075] &times; (NP &divide; 320)</strong>');
-      win.document.write('P=Produtividade (sc/ha) &nbsp;|&nbsp; H=Hastes &nbsp;|&nbsp; RP=Ramos &nbsp;|&nbsp; RO=Rosetas &nbsp;|&nbsp; F=Frutos/roseta &nbsp;|&nbsp; NP=Plantas/ha');
-      win.document.write('</div>');
+      html += '<div style="background:#FFF8E6;border:1px solid #F5C254;border-radius:6px;padding:10px;margin-bottom:14px;font-size:10px;color:#7a4a00">';
+      html += '<strong style="font-size:11px;display:block;margin-bottom:4px;color:#BA7517">F&oacute;rmula Oficial: P = [H &times; RP &times; RO &times; F &times; 2 &times; 0,00075] &times; (NP &divide; 320)</strong>';
+      html += 'P=Produtividade (sc/ha) &nbsp;|&nbsp; H=Hastes &nbsp;|&nbsp; RP=Ramos &nbsp;|&nbsp; RO=Rosetas &nbsp;|&nbsp; F=Frutos/roseta &nbsp;|&nbsp; NP=Plantas/ha';
+      html += '</div>';
 
-      win.document.write('<div class="footer">');
-      win.document.write('<span>Labor Rural &mdash; Intelig&ecirc;ncia para o Agroneg&oacute;cio</span>');
-      win.document.write('<span>laborrural.com</span>');
-      win.document.write('</div>');
+      html += '<div style="padding-top:8px;border-top:1px solid #DDE8E4;font-size:9px;color:#8FA8A0;display:flex;justify-content:space-between">';
+      html += '<span>Labor Rural &mdash; Intelig&ecirc;ncia para o Agroneg&oacute;cio</span>';
+      html += '<span>laborrural.com</span>';
+      html += '</div>';
 
-      win.document.write('<div class="no-print" style="text-align:center;margin-top:20px">');
-      win.document.write('<button onclick="window.print()" style="background:#0A3D35;color:#fff;border:none;padding:12px 32px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">&#128438; Imprimir / Salvar PDF</button>');
-      win.document.write('</div>');
+      document.getElementById('pdf-content').innerHTML = html;
+      closeModal('exp');
+      document.getElementById('pdf-overlay').style.display = 'block';
+      document.getElementById('pdf-overlay').scrollTop = 0;
 
-      win.document.write('</body></html>');
-      win.document.close();
-
-      showToast('Relatorio aberto! Use Imprimir > Salvar como PDF');
+      showToast('Relatorio pronto! Toque em Imprimir / Salvar PDF');
       stopProg();
     } catch(err){
       showToast('Erro: '+err.message); stopProg();
